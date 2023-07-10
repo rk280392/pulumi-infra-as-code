@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"infra-eks/subnet"
+	"infra-eks/vpc"
 
 	"github.com/pulumi/pulumi-aws/sdk/v4/go/aws/eks"
 	"github.com/pulumi/pulumi-aws/sdk/v4/go/aws/iam"
@@ -12,61 +14,24 @@ import (
 func main() {
 
 	prefix := "my-eks"
+	vpcCIDR := "172.16.0.0/16"
+	pubCIDRs := []string{"172.16.1.0/24", "172.16.2.0/24", "172.16.3.0/24"}
+	pvtCIDRs := []string{"172.16.5.0/24", "172.16.6.0/24", "172.16.7.0/24"}
+	azs := []string{"ap-south-1a", "ap-south-1b"}
+
 	pulumi.Run(func(ctx *pulumi.Context) error {
-		vpc, err := ec2.NewVpc(ctx, prefix+"-vpc", &ec2.VpcArgs{
-			CidrBlock:       pulumi.String("172.16.0.0/16"),
-			InstanceTenancy: pulumi.String("default"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("eks-vpc"),
-			},
-		})
+		vpc, err := vpc.CreateVPC(ctx, prefix, vpcCIDR)
+
 		if err != nil {
 			return err
 		}
-		privSubnet1, err := ec2.NewSubnet(ctx, prefix+"-priv-subnet-1", &ec2.SubnetArgs{
-			VpcId:            vpc.ID(),
-			CidrBlock:        pulumi.String("172.16.1.0/24"),
-			AvailabilityZone: pulumi.String("ap-south-1a"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("eks-subnet"),
-			},
-		})
+		SubnetGen := subnet.NewSubnetGenerator(ctx, pubCIDRs, pvtCIDRs, azs, vpc.ID(), prefix)
+		pvtSubnetIDs, err := SubnetGen.CreatePvtSubnet()
 		if err != nil {
 			return err
 		}
 
-		privSubnet2, err := ec2.NewSubnet(ctx, prefix+"-priv-subnet-2", &ec2.SubnetArgs{
-			VpcId:            vpc.ID(),
-			CidrBlock:        pulumi.String("172.16.2.0/24"),
-			AvailabilityZone: pulumi.String("ap-south-1b"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("eks-subnet"),
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		pubSubnet1, err := ec2.NewSubnet(ctx, prefix+"-pub-subnet-1", &ec2.SubnetArgs{
-			VpcId:            vpc.ID(),
-			CidrBlock:        pulumi.String("172.16.5.0/24"),
-			AvailabilityZone: pulumi.String("ap-south-1a"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("eks-subnet"),
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		pubSubnet2, err := ec2.NewSubnet(ctx, prefix+"-pub-subnet-2", &ec2.SubnetArgs{
-			VpcId:            vpc.ID(),
-			CidrBlock:        pulumi.String("172.16.6.0/24"),
-			AvailabilityZone: pulumi.String("ap-south-1b"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("eks-subnet"),
-			},
-		})
+		pubSubnetIDs, err := SubnetGen.CreatePubSubnet()
 		if err != nil {
 			return err
 		}
@@ -81,8 +46,12 @@ func main() {
 
 		ngw, err := ec2.NewNatGateway(ctx, prefix+"-ngw", &ec2.NatGatewayArgs{
 			AllocationId: eip.ID(),
-			SubnetId:     pubSubnet1.ID(),
+			SubnetId:     pubSubnetIDs[0],
 		})
+
+		if err != nil {
+			return err
+		}
 
 		igw, err := ec2.NewInternetGateway(ctx, prefix+"-igw", &ec2.InternetGatewayArgs{
 			VpcId: vpc.ID(),
@@ -118,7 +87,7 @@ func main() {
 		}
 
 		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pvt1-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     privSubnet1.ID(),
+			SubnetId:     pvtSubnetIDs[0],
 			RouteTableId: pvtRouteTable.ID(),
 		})
 		if err != nil {
@@ -126,7 +95,7 @@ func main() {
 		}
 
 		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pvt2-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     privSubnet2.ID(),
+			SubnetId:     pvtSubnetIDs[1],
 			RouteTableId: pvtRouteTable.ID(),
 		})
 		if err != nil {
@@ -134,7 +103,7 @@ func main() {
 		}
 
 		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pub-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     pubSubnet1.ID(),
+			SubnetId:     pubSubnetIDs[0],
 			RouteTableId: publicRouteTable.ID(),
 		})
 		if err != nil {
@@ -142,7 +111,7 @@ func main() {
 		}
 
 		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pubrta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     privSubnet1.ID(),
+			SubnetId:     pvtSubnetIDs[1],
 			RouteTableId: pvtRouteTable.ID(),
 		})
 		if err != nil {
@@ -151,17 +120,17 @@ func main() {
 
 		role, err := iam.NewRole(ctx, "eks-role", &iam.RoleArgs{
 			AssumeRolePolicy: pulumi.String(`{
-                "Version": "2012-10-17",
-                "Statement": [
-                {
-                    "Action": "sts:AssumeRole",
-                    "Principal": {
-                        "Service": "eks.amazonaws.com"
-                    },
-                    "Effect": "Allow",
-                    "Sid": ""
-                }]
-            }`),
+		"Version": "2012-10-17",
+		"Statement": [
+		{
+		    "Action": "sts:AssumeRole",
+		    "Principal": {
+			"Service": "eks.amazonaws.com"
+		    },
+		    "Effect": "Allow",
+		    "Sid": ""
+		}]
+	    }`),
 		})
 		if err != nil {
 			return err
@@ -206,7 +175,7 @@ func main() {
 
 		var subnetIds pulumi.StringArray
 
-		_, err = eks.NewCluster(ctx, "eks-test-cluster", &eks.ClusterArgs{
+		cluster, err := eks.NewCluster(ctx, "eks-test-cluster", &eks.ClusterArgs{
 			RoleArn: role.Arn,
 			VpcConfig: &eks.ClusterVpcConfigArgs{
 				PublicAccessCidrs: pulumi.StringArray{
@@ -218,10 +187,10 @@ func main() {
 				SubnetIds: pulumi.StringArray(
 					append(
 						subnetIds,
-						privSubnet1.ID(),
-						privSubnet2.ID(),
-						pubSubnet1.ID(),
-						pubSubnet2.ID(),
+						pvtSubnetIDs[0],
+						pvtSubnetIDs[1],
+						pubSubnetIDs[0],
+						pubSubnetIDs[1],
 					)),
 			},
 			Version: pulumi.String("1.27"),
@@ -232,6 +201,68 @@ func main() {
 		if err != nil {
 			return err
 		}
+
+		nodeGroupRole, err := iam.NewRole(ctx, prefix+"nodegroup-role", &iam.RoleArgs{
+			AssumeRolePolicy: pulumi.String(`{
+		    "Version": "2012-10-17",
+		    "Statement": [{
+			"Sid": "",
+			"Effect": "Allow",
+			"Principal": {
+			    "Service": "ec2.amazonaws.com"
+			},
+			"Action": "sts:AssumeRole"
+		    }]
+		}`),
+		})
+		if err != nil {
+			return err
+		}
+		nodeGroupPolicies := []string{
+			"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+			"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+			"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+		}
+		for i, nodeGroupPolicy := range nodeGroupPolicies {
+			_, err := iam.NewRolePolicyAttachment(ctx, fmt.Sprintf(prefix+"ngr-%d", i), &iam.RolePolicyAttachmentArgs{
+				Role:      nodeGroupRole.Name,
+				PolicyArn: pulumi.String(nodeGroupPolicy),
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		var privateSubnets pulumi.StringArray
+
+		_, err = eks.NewNodeGroup(ctx, prefix+"-ng-1", &eks.NodeGroupArgs{
+			ClusterName: cluster.Name,
+			InstanceTypes: pulumi.StringArray{
+				pulumi.String("t3.medium"),
+			},
+			CapacityType: pulumi.String("SPOT"),
+			SubnetIds: pulumi.StringArray(
+				append(
+					privateSubnets,
+					pvtSubnetIDs[0],
+					pvtSubnetIDs[1],
+				)),
+			NodeRoleArn: pulumi.StringInput(nodeGroupRole.Arn),
+			ScalingConfig: &eks.NodeGroupScalingConfigArgs{
+				DesiredSize: pulumi.Int(3),
+				MinSize:     pulumi.Int(2),
+				MaxSize:     pulumi.Int(5),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		ctx.Export("endpoint", cluster.Endpoint)
+		ctx.Export("clusterName", cluster.Name)
+		ctx.Export("kubeconfig-certificate-authority-data", cluster.CertificateAuthority.ApplyT(func(certificateAuthority eks.ClusterCertificateAuthority) (string, error) {
+			return *certificateAuthority.Data, nil
+		}).(pulumi.StringOutput))
 		return nil
 	})
 }

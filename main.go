@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"infra-eks/eip"
+	"infra-eks/internetGateway"
+	"infra-eks/natGateway"
 	"infra-eks/subnet"
 	"infra-eks/vpc"
 
@@ -21,10 +24,10 @@ func main() {
 
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		vpc, err := vpc.CreateVPC(ctx, prefix, vpcCIDR)
-
 		if err != nil {
 			return err
 		}
+
 		SubnetGen := subnet.NewSubnetGenerator(ctx, pubCIDRs, pvtCIDRs, azs, vpc.ID(), prefix)
 		pvtSubnetIDs, err := SubnetGen.CreatePvtSubnet()
 		if err != nil {
@@ -36,29 +39,21 @@ func main() {
 			return err
 		}
 
-		eip, err := ec2.NewEip(ctx, prefix+"-eip", &ec2.EipArgs{
-			Vpc: pulumi.Bool(true),
-		})
-
+		eip, err := eip.CreateEIPs(ctx, prefix)
 		if err != nil {
 			return err
 		}
 
-		ngw, err := ec2.NewNatGateway(ctx, prefix+"-ngw", &ec2.NatGatewayArgs{
-			AllocationId: eip.ID(),
-			SubnetId:     pubSubnetIDs[0],
-		})
-
+		ngw, err := natGateway.CreateNatGateway(ctx, prefix, pubSubnetIDs[0], eip.ID())
 		if err != nil {
 			return err
 		}
 
-		igw, err := ec2.NewInternetGateway(ctx, prefix+"-igw", &ec2.InternetGatewayArgs{
-			VpcId: vpc.ID(),
-		})
+		igw, err := internetGateway.CreateInternetGateway(ctx, prefix, vpc.ID())
 		if err != nil {
 			return err
 		}
+
 		pvtRouteTable, err := ec2.NewRouteTable(ctx, prefix+"-pvt-rt", &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Routes: ec2.RouteTableRouteArray{

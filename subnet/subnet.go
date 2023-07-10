@@ -27,9 +27,6 @@ func NewSubnetGenerator(ctx *pulumi.Context, pubCIDRs, pvtCIDRs, azs []string, v
 	}
 }
 
-//var pubSubnetID []*ec2.Subnet
-//pubSubnetsMap := make(map[string]string)
-
 func (sg *SubnetGen) CreatePvtSubnet() ([]pulumi.IDOutput, error) {
 	var pvtSubnetID []pulumi.IDOutput
 	pvtSubnetsMap := make(map[string]string)

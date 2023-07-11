@@ -1,24 +1,61 @@
 package main
 
 import (
-	"fmt"
-	"infra-eks/eip"
+	"infra-eks/ec2Instance"
+	"infra-eks/eksCluster"
+	"infra-eks/eksIAM"
 	"infra-eks/vpc"
 
 	"github.com/pulumi/pulumi-aws/sdk/v4/go/aws/eks"
-	"github.com/pulumi/pulumi-aws/sdk/v4/go/aws/iam"
-	"github.com/pulumi/pulumi-aws/sdk/v5/go/aws/ec2"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
 func main() {
 
+	k8sVersion := "1.27"
 	prefix := "my-eks"
 	vpcCIDR := "172.16.0.0/16"
 	pubCIDRs := []string{"172.16.1.0/24", "172.16.2.0/24", "172.16.3.0/24"}
 	pvtCIDRs := []string{"172.16.5.0/24", "172.16.6.0/24", "172.16.7.0/24"}
 	azs := []string{"ap-south-1a", "ap-south-1b"}
 	internetCIDR := "0.0.0.0/0"
+	capacityType := "SPOT"
+	instanceTypes := []string{"t3.medium"}
+	desiredSize := 3
+	minSize := 2
+	maxSize := 5
+	eksRole := `{
+		"Version": "2012-10-17",
+		"Statement": [
+		{
+			"Action": "sts:AssumeRole",
+			"Principal": {
+			"Service": "eks.amazonaws.com"
+			},
+			"Effect": "Allow",
+			"Sid": ""
+		}]
+		}`
+	eksPolicies := []string{
+		"arn:aws:iam::aws:policy/AmazonEKSServicePolicy",
+		"arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+	}
+	nodeGroupRole := `{
+		"Version": "2012-10-17",
+		"Statement": [{
+		"Sid": "",
+		"Effect": "Allow",
+		"Principal": {
+			"Service": "ec2.amazonaws.com"
+		},
+		"Action": "sts:AssumeRole"
+		}]
+	}`
+	nodeGroupPolicies := []string{
+		"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+		"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+		"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+	}
 
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		vpcInstance, err := vpc.CreateVPC(ctx, prefix, vpcCIDR)
@@ -37,7 +74,7 @@ func main() {
 			return err
 		}
 
-		eip, err := eip.CreateEIPs(ctx, prefix)
+		eip, err := ec2Instance.CreateEIPs(ctx, prefix)
 		if err != nil {
 			return err
 		}
@@ -61,178 +98,51 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pvt1-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     pvtSubnetIDs[0],
-			RouteTableId: pvtRouteTable.ID(),
-		})
+
+		err = vpc.CreatePvtRouteTableAssoc(ctx, prefix, pvtSubnetIDs, pvtRouteTable.ID())
 		if err != nil {
 			return err
 		}
 
-		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pvt2-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     pvtSubnetIDs[1],
-			RouteTableId: pvtRouteTable.ID(),
-		})
+		err = vpc.CreatePubRouteTableAssoc(ctx, prefix, pubSubnetIDs, publicRouteTable.ID())
 		if err != nil {
 			return err
 		}
 
-		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pub-rta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     pubSubnetIDs[0],
-			RouteTableId: publicRouteTable.ID(),
-		})
+		roleInstance, err := eksIAM.CreateEKSRole(ctx, prefix, eksRole)
 		if err != nil {
 			return err
 		}
 
-		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pubrta", &ec2.RouteTableAssociationArgs{
-			SubnetId:     pvtSubnetIDs[1],
-			RouteTableId: pvtRouteTable.ID(),
-		})
+		err = eksIAM.CreateEKSPolicies(ctx, prefix, eksPolicies, roleInstance.Name)
 		if err != nil {
 			return err
 		}
 
-		role, err := iam.NewRole(ctx, "eks-role", &iam.RoleArgs{
-			AssumeRolePolicy: pulumi.String(`{
-		"Version": "2012-10-17",
-		"Statement": [
-		{
-		    "Action": "sts:AssumeRole",
-		    "Principal": {
-			"Service": "eks.amazonaws.com"
-		    },
-		    "Effect": "Allow",
-		    "Sid": ""
-		}]
-	    }`),
-		})
-		if err != nil {
-			return err
-		}
-		eksPolicies := []string{
-			"arn:aws:iam::aws:policy/AmazonEKSServicePolicy",
-			"arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
-		}
-		for i, eksPolicy := range eksPolicies {
-			_, err := iam.NewRolePolicyAttachment(ctx, fmt.Sprintf(prefix+"rpa-%d", i), &iam.RolePolicyAttachmentArgs{
-				PolicyArn: pulumi.String(eksPolicy),
-				Role:      role.Name,
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		sgs, err := ec2.NewSecurityGroup(ctx, prefix+"-sg", &ec2.SecurityGroupArgs{
-			VpcId: vpcInstance.ID(),
-			Egress: ec2.SecurityGroupEgressArray{
-				ec2.SecurityGroupEgressArgs{
-					Protocol:   pulumi.String("-1"),
-					FromPort:   pulumi.Int(0),
-					ToPort:     pulumi.Int(0),
-					CidrBlocks: pulumi.StringArray{pulumi.String("0.0.0.0/0")},
-				},
-			},
-			Ingress: ec2.SecurityGroupIngressArray{
-				ec2.SecurityGroupIngressArgs{
-					Protocol:   pulumi.String("tcp"),
-					FromPort:   pulumi.Int(80),
-					ToPort:     pulumi.Int(80),
-					CidrBlocks: pulumi.StringArray{pulumi.String("0.0.0.0/0")},
-				},
-			},
-		})
-
+		sgsInstance, err := ec2Instance.CreateSecurityGroup(ctx, prefix, internetCIDR, vpcInstance.ID())
 		if err != nil {
 			return err
 		}
 
-		var subnetIds pulumi.StringArray
-
-		cluster, err := eks.NewCluster(ctx, "eks-test-cluster", &eks.ClusterArgs{
-			RoleArn: role.Arn,
-			VpcConfig: &eks.ClusterVpcConfigArgs{
-				PublicAccessCidrs: pulumi.StringArray{
-					pulumi.String("0.0.0.0/0"),
-				},
-				SecurityGroupIds: pulumi.StringArray{
-					sgs.ID().ToStringOutput(),
-				},
-				SubnetIds: pulumi.StringArray(
-					append(
-						subnetIds,
-						pvtSubnetIDs[0],
-						pvtSubnetIDs[1],
-						pubSubnetIDs[0],
-						pubSubnetIDs[1],
-					)),
-			},
-			Version: pulumi.String("1.27"),
-			Tags: pulumi.StringMap{
-				"Name": pulumi.String("my-eks-cluster"),
-			},
-		})
+		cluster, err := eksCluster.CreateEKSCluster(ctx, prefix, internetCIDR, k8sVersion, roleInstance.Arn, sgsInstance.ID(), pvtSubnetIDs, pubSubnetIDs)
 		if err != nil {
 			return err
 		}
 
-		nodeGroupRole, err := iam.NewRole(ctx, prefix+"nodegroup-role", &iam.RoleArgs{
-			AssumeRolePolicy: pulumi.String(`{
-		    "Version": "2012-10-17",
-		    "Statement": [{
-			"Sid": "",
-			"Effect": "Allow",
-			"Principal": {
-			    "Service": "ec2.amazonaws.com"
-			},
-			"Action": "sts:AssumeRole"
-		    }]
-		}`),
-		})
-		if err != nil {
-			return err
-		}
-		nodeGroupPolicies := []string{
-			"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
-			"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
-			"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
-		}
-		for i, nodeGroupPolicy := range nodeGroupPolicies {
-			_, err := iam.NewRolePolicyAttachment(ctx, fmt.Sprintf(prefix+"ngr-%d", i), &iam.RolePolicyAttachmentArgs{
-				Role:      nodeGroupRole.Name,
-				PolicyArn: pulumi.String(nodeGroupPolicy),
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		var privateSubnets pulumi.StringArray
-
-		_, err = eks.NewNodeGroup(ctx, prefix+"-ng-1", &eks.NodeGroupArgs{
-			ClusterName: cluster.Name,
-			InstanceTypes: pulumi.StringArray{
-				pulumi.String("t3.medium"),
-			},
-			CapacityType: pulumi.String("SPOT"),
-			SubnetIds: pulumi.StringArray(
-				append(
-					privateSubnets,
-					pvtSubnetIDs[0],
-					pvtSubnetIDs[1],
-				)),
-			NodeRoleArn: pulumi.StringInput(nodeGroupRole.Arn),
-			ScalingConfig: &eks.NodeGroupScalingConfigArgs{
-				DesiredSize: pulumi.Int(3),
-				MinSize:     pulumi.Int(2),
-				MaxSize:     pulumi.Int(5),
-			},
-		})
+		nodeRole, err := eksIAM.CreateNodeRole(ctx, prefix, nodeGroupRole)
 		if err != nil {
 			return err
 		}
 
+		err = eksIAM.CreateNodePolicies(ctx, prefix, nodeRole.Name, nodeGroupPolicies)
+		if err != nil {
+			return err
+		}
+
+		err = eksCluster.CreateEKSNodeGroup(ctx, prefix, capacityType, nodeRole.Arn, cluster.Name, instanceTypes, pvtSubnetIDs, desiredSize, maxSize, minSize)
+		if err != nil {
+			return err
+		}
 		ctx.Export("endpoint", cluster.Endpoint)
 		ctx.Export("clusterName", cluster.Name)
 		ctx.Export("kubeconfig-certificate-authority-data", cluster.CertificateAuthority.ApplyT(func(certificateAuthority eks.ClusterCertificateAuthority) (string, error) {

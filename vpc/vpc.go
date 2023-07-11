@@ -127,7 +127,7 @@ func CreatePvtRouteTable(ctx *pulumi.Context, prefix, internetCIDR string, ngwID
 	return pvtRouteTable, nil
 }
 func CreatePubRouteTable(ctx *pulumi.Context, prefix, internetCIDR string, vpcID, igwID pulumi.StringInput) (*ec2.RouteTable, error) {
-	publicRouteTable, err := ec2.NewRouteTable(ctx, prefix+"pub-rt", &ec2.RouteTableArgs{
+	publicRouteTable, err := ec2.NewRouteTable(ctx, prefix+"-pub-rt", &ec2.RouteTableArgs{
 		VpcId: vpcID,
 		Routes: ec2.RouteTableRouteArray{
 			&ec2.RouteTableRouteArgs{
@@ -140,4 +140,32 @@ func CreatePubRouteTable(ctx *pulumi.Context, prefix, internetCIDR string, vpcID
 		return nil, err
 	}
 	return publicRouteTable, nil
+}
+
+func CreatePvtRouteTableAssoc(ctx *pulumi.Context, prefix string, pvtSubnetIDs []pulumi.IDOutput, rtID pulumi.IDOutput) error {
+
+	for i, id := range pvtSubnetIDs {
+		_, err := ec2.NewRouteTableAssociation(ctx, fmt.Sprintf(prefix+"-pvt-rta-%d", i), &ec2.RouteTableAssociationArgs{
+			SubnetId:     id,
+			RouteTableId: rtID,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func CreatePubRouteTableAssoc(ctx *pulumi.Context, prefix string, pubSubnetIDs []pulumi.IDOutput, rtID pulumi.IDOutput) error {
+
+	for i, id := range pubSubnetIDs {
+		_, err := ec2.NewRouteTableAssociation(ctx, fmt.Sprintf(prefix+"-pub-rta-%d", i), &ec2.RouteTableAssociationArgs{
+			SubnetId:     id,
+			RouteTableId: rtID,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

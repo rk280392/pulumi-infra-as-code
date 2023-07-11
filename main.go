@@ -3,9 +3,6 @@ package main
 import (
 	"fmt"
 	"infra-eks/eip"
-	"infra-eks/internetGateway"
-	"infra-eks/natGateway"
-	"infra-eks/subnet"
 	"infra-eks/vpc"
 
 	"github.com/pulumi/pulumi-aws/sdk/v4/go/aws/eks"
@@ -21,14 +18,15 @@ func main() {
 	pubCIDRs := []string{"172.16.1.0/24", "172.16.2.0/24", "172.16.3.0/24"}
 	pvtCIDRs := []string{"172.16.5.0/24", "172.16.6.0/24", "172.16.7.0/24"}
 	azs := []string{"ap-south-1a", "ap-south-1b"}
+	internetCIDR := "0.0.0.0/0"
 
 	pulumi.Run(func(ctx *pulumi.Context) error {
-		vpc, err := vpc.CreateVPC(ctx, prefix, vpcCIDR)
+		vpcInstance, err := vpc.CreateVPC(ctx, prefix, vpcCIDR)
 		if err != nil {
 			return err
 		}
 
-		SubnetGen := subnet.NewSubnetGenerator(ctx, pubCIDRs, pvtCIDRs, azs, vpc.ID(), prefix)
+		SubnetGen := vpc.NewSubnetGenerator(ctx, pubCIDRs, pvtCIDRs, azs, vpcInstance.ID(), prefix)
 		pvtSubnetIDs, err := SubnetGen.CreatePvtSubnet()
 		if err != nil {
 			return err
@@ -44,43 +42,25 @@ func main() {
 			return err
 		}
 
-		ngw, err := natGateway.CreateNatGateway(ctx, prefix, pubSubnetIDs[0], eip.ID())
+		ngw, err := vpc.CreateNatGateway(ctx, prefix, pubSubnetIDs[0], eip.ID())
 		if err != nil {
 			return err
 		}
 
-		igw, err := internetGateway.CreateInternetGateway(ctx, prefix, vpc.ID())
+		igw, err := vpc.CreateInternetGateway(ctx, prefix, vpcInstance.ID())
 		if err != nil {
 			return err
 		}
 
-		pvtRouteTable, err := ec2.NewRouteTable(ctx, prefix+"-pvt-rt", &ec2.RouteTableArgs{
-			VpcId: vpc.ID(),
-			Routes: ec2.RouteTableRouteArray{
-				&ec2.RouteTableRouteArgs{
-					CidrBlock: pulumi.String("0.0.0.0/0"),
-					GatewayId: ngw.ID(),
-				},
-			},
-		})
+		pvtRouteTable, err := vpc.CreatePvtRouteTable(ctx, prefix, internetCIDR, ngw.ID(), vpcInstance.ID())
 		if err != nil {
 			return err
 		}
 
-		publicRouteTable, err := ec2.NewRouteTable(ctx, prefix+"pub-rt", &ec2.RouteTableArgs{
-			VpcId: vpc.ID(),
-			Routes: ec2.RouteTableRouteArray{
-				&ec2.RouteTableRouteArgs{
-					CidrBlock: pulumi.String("0.0.0.0/0"),
-					GatewayId: igw.ID(),
-				},
-			},
-		})
-
+		publicRouteTable, err := vpc.CreatePubRouteTable(ctx, prefix, internetCIDR, vpcInstance.ID(), igw.ID())
 		if err != nil {
 			return err
 		}
-
 		_, err = ec2.NewRouteTableAssociation(ctx, prefix+"-pvt1-rta", &ec2.RouteTableAssociationArgs{
 			SubnetId:     pvtSubnetIDs[0],
 			RouteTableId: pvtRouteTable.ID(),
@@ -145,7 +125,7 @@ func main() {
 		}
 
 		sgs, err := ec2.NewSecurityGroup(ctx, prefix+"-sg", &ec2.SecurityGroupArgs{
-			VpcId: vpc.ID(),
+			VpcId: vpcInstance.ID(),
 			Egress: ec2.SecurityGroupEgressArray{
 				ec2.SecurityGroupEgressArgs{
 					Protocol:   pulumi.String("-1"),

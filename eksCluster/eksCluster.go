@@ -7,7 +7,11 @@ import (
 
 func CreateEKSCluster(ctx *pulumi.Context, prefix, internetCIDR, k8sVersion string, roleArn pulumi.StringOutput, sgID pulumi.IDOutput, pvtSubnetIDs, pubSubnetIDs []pulumi.IDOutput) (*eks.Cluster, error) {
 
+	// converting []pvtSubnetIDs and pubSubnetIDs into one pulumi.StringArray format
 	subnetIdsStringArray := pulumi.StringArray{}
+
+	// the three dots means that we want to append individual strings inside the pubSubnetIDs slice, instead of appending a slice object to another slice.
+	// See variadic functions.  https://go.dev/blog/slices
 	subnetIDs := append(pvtSubnetIDs, pubSubnetIDs...)
 	for _, op := range subnetIDs {
 		subnetIdsStringArray = append(subnetIdsStringArray, op.ToStringOutput())

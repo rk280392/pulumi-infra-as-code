@@ -41,6 +41,8 @@ func NewSubnetGenerator(ctx *pulumi.Context, pubCIDRs, pvtCIDRs, azs []string, v
 }
 
 func (sg *SubnetGen) CreatePvtSubnet() ([]pulumi.IDOutput, error) {
+
+	// Create private subnets. The plan is to create a subnet in each AZ. depending on the length of az and subnet slices, we might create multiple subnets in one az.
 	var pvtSubnetID []pulumi.IDOutput
 	pvtSubnetsMap := make(map[string]string)
 
